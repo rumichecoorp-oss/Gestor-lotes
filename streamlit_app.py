@@ -10,7 +10,7 @@ SHEET_ID = "1CdRBWSW9QDh63s7-8lnZvGu8rwz65z2duPnk2Nqfzqc"
 
 @st.cache_data(ttl=15)
 def descargar_workbook():
-    # Descarga el archivo XLSX conservando los estilos de color y formatos de celda
+    # Descarga directa del archivo en formato XLSX con todos los estilos y colores
     url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx"
     res = requests.get(url)
     if res.status_code != 200:
@@ -36,42 +36,48 @@ ws_ventas = wb["VENTAS"] if "VENTAS" in wb.sheetnames else None
 
 def get_color_estado(cell):
     """
-    Detecta el estado de la cuota según color de celda (RGB/ARGB)
-    o por contenido de la anotación registrada.
+    Inspecciona con precisión el color de fondo real de openpyxl (fgColor y start_color).
+    Prioriza estrictamente el color visual sobre el contenido escrito en la celda.
     """
-    color_detectado = None
+    if not cell or not cell.fill:
+        return "BLANCO"
 
-    if cell and cell.fill and cell.fill.start_color:
-        color = cell.fill.start_color
-        rgb = getattr(color, 'rgb', None)
-        if rgb and isinstance(rgb, str):
-            rgb = str(rgb).upper().strip()
-            # Si tiene 8 caracteres (ARGB con canal alfa de Google), tomamos los últimos 6
-            if len(rgb) == 8:
-                rgb = rgb[2:]
+    fill = cell.fill
+    color_obj = getattr(fill, 'fgColor', None) or getattr(fill, 'start_color', None)
+    
+    rgb_raw = ""
+    if color_obj:
+        val = getattr(color_obj, 'rgb', None) or getattr(color_obj, 'value', None)
+        if val and isinstance(val, str):
+            rgb_raw = val.upper().strip()
+            # Si contiene canal alfa (8 dígitos ARGB), tomar los últimos 6 dígitos
+            if len(rgb_raw) == 8:
+                rgb_raw = rgb_raw[2:]
 
-            # Tonos verdes comunes en Google Sheets
-            if any(g in rgb for g in ["00FF00", "57BB8A", "6AA84F", "00E676", "38761D", "85E89D", "B7E1CD", "274E13", "81C784", "4CAF50", "A8DAB5"]):
-                color_detectado = "VERDE"
-            # Tonos naranja / ámbar (cuotas por vencer / vencidas)
-            elif any(o in rgb for o in ["FFA500", "FF9900", "F6B26B", "F9AB00", "E69138", "FB8C00", "FF5722", "FFB74D", "FF9800", "FCE8E6"]):
-                color_detectado = "NARANJA"
-            # Tonos rojos (lotes caídos / mora crítica)
-            elif any(r in rgb for r in ["FF0000", "CC0000", "E06666", "EA4335", "990000", "E57373", "F44336"]):
-                color_detectado = "ROJO"
+    # 1. EVALUAR TONOS NARANJA / ÁMBAR (Cuotas vencidas)
+    # Cubre los colores de Google Sheets: #FF9900, #F6B26B, #E69138, #FF5722, #FF7043, #FB8C00
+    naranjas = ["FFA500", "FF9900", "F6B26B", "F9AB00", "E69138", "FB8C00", "FF5722", "FF7043", "FFB74D", "FF9800", "E55100"]
+    if any(n in rgb_raw for n in naranjas):
+        return "NARANJA"
 
-    if color_detectado in ["VERDE", "NARANJA", "ROJO"]:
-        return color_detectado
+    # 2. EVALUAR TONOS VERDES (Cuotas pagadas)
+    # Cubre: #00FF00, #57BB8A, #6AA84F, #00E676, #38761D, #85E89D, #B7E1CD, #274E13, #81C784, #4CAF50
+    verdes = ["00FF00", "57BB8A", "6AA84F", "00E676", "38761D", "85E89D", "B7E1CD", "274E13", "81C784", "4CAF50", "2E7D32", "00C853"]
+    if any(v in rgb_raw for v in verdes):
+        return "VERDE"
 
-    # Respaldo de seguridad por contenido si el tema de Sheets no expuso el RGB
-    val_str = str(cell.value or "").strip().upper() if cell else ""
+    # 3. EVALUAR TONOS ROJOS (Pérdidas / Críticas)
+    rojos = ["FF0000", "CC0000", "E06666", "EA4335", "990000", "E57373", "F44336", "C62828"]
+    if any(r in rgb_raw for r in rojos):
+        return "ROJO"
+
+    # 4. EVALUACIÓN POR TEXTO EXPLÍCITO (Solo si la celda no tiene color identificable)
+    val_str = str(cell.value or "").strip().upper()
     if val_str and val_str not in ["NONE", "NAN", ""]:
-        if any(w in val_str for w in ["DEBE", "MORA", "FALTA"]):
+        if any(w in val_str for w in ["DEBE", "MORA", "FALTA", "VENCIDA"]):
             return "NARANJA"
         if any(w in val_str for w in ["BAJA", "PERDIDO", "CANCELADO"]):
             return "ROJO"
-        # Si tiene texto de pago o monto (ej: '636 //30-5' o 'S/.795')
-        return "VERDE"
 
     return "BLANCO"
 
@@ -95,7 +101,7 @@ PALABRAS_IGNORAR = {
     "NOMBRE", "NOMBRES", "NOMBRRE", "CLIENTE", "ID", "TOTAL", "SUBTOTAL"
 }
 
-# 1. Encontrar la columna donde empieza la cuota 1 en la fila de encabezados
+# 1. Encontrar la columna inicial de la Cuota 1
 fila_encabezado_idx = 1
 col_cuota_1 = 13  # Por defecto columna M
 
@@ -109,7 +115,7 @@ for r in range(1, 10):
     if col_cuota_1 != 13:
         break
 
-# 2. Extraer lotes y clientes permitiendo duplicados mediante identificación única
+# 2. Extraer lotes y clientes asegurando IDs únicos
 registros_lotes = []
 for r in range(fila_encabezado_idx + 1, ws_ct.max_row + 1):
     val_nom = ws_ct.cell(row=r, column=1).value
@@ -124,7 +130,6 @@ for r in range(fila_encabezado_idx + 1, ws_ct.max_row + 1):
     if not etapa and not lote:
         continue
 
-    # Etiqueta visible única para no pisar clientes repetidos
     label = f"{nom_str} — {etapa} Lote {lote}"
     registros_lotes.append({
         "id_compuesto": label,
@@ -135,7 +140,7 @@ for r in range(fila_encabezado_idx + 1, ws_ct.max_row + 1):
     })
 
 if not registros_lotes:
-    st.warning("No se encontraron registros válidos de clientes en la pestaña CT.")
+    st.warning("No se encontraron registros de clientes en la pestaña CT.")
     st.stop()
 
 opciones_busqueda = [item["id_compuesto"] for item in registros_lotes]
@@ -157,12 +162,12 @@ if cliente_sel_label:
     m2 = str(ws_ct.cell(row=row_idx, column=4).value or "-").strip()
     valor_cuota = clean_number(ws_ct.cell(row=row_idx, column=9).value) # Columna I en CT
 
-    # Valores base tomados de CT como respaldo
+    # Valores de respaldo en CT
     valor_total = clean_number(ws_ct.cell(row=row_idx, column=5).value) # Columna E en CT
     monto_inicial = clean_number(ws_ct.cell(row=row_idx, column=6).value) # Columna F en CT
     modalidad = "FINANCIADO"
 
-    # Cruce con la pestaña VENTAS haciendo coincidir CLIENTE Y LOTE
+    # Cruce por Nombre y Lote con la pestaña VENTAS
     if ws_ventas:
         for r_v in range(2, ws_ventas.max_row + 1):
             nom_v = str(ws_ventas.cell(row=r_v, column=2).value or "").strip()
@@ -172,16 +177,16 @@ if cliente_sel_label:
             coincide_lote = normalizar(lote_v) == normalizar(lote) if lote and lote_v else True
             
             if coincide_nom and coincide_lote:
-                v_total = clean_number(ws_ventas.cell(row=r_v, column=7).value)   # Columna G en VENTAS
-                v_inic = clean_number(ws_ventas.cell(row=r_v, column=12).value)   # Columna L en VENTAS
-                mod_v = str(ws_ventas.cell(row=r_v, column=15).value or "").strip().upper() # Columna O en VENTAS
+                v_total = clean_number(ws_ventas.cell(row=r_v, column=7).value)   # Columna G
+                v_inic = clean_number(ws_ventas.cell(row=r_v, column=12).value)   # Columna L
+                mod_v = str(ws_ventas.cell(row=r_v, column=15).value or "").strip().upper() # Columna O
                 
                 if v_total > 0: valor_total = v_total
                 if v_inic > 0: monto_inicial = v_inic
                 if mod_v: modalidad = mod_v
                 break
 
-    # 3. Procesar las 36 cuotas evaluando verde, naranja, rojo o blanco
+    # 3. Procesar exactamente las 36 cuotas
     cuotas_estados = []
     total_verdes = 0
     total_naranjas = 0
@@ -204,7 +209,7 @@ if cliente_sel_label:
         else:
             cuotas_estados.append("BLANCO")
 
-    # Reglas financieras según la modalidad de pago
+    # Lógica financiera según modalidad
     es_contado = "CONTADO" in modalidad
     if es_contado:
         total_pagado = valor_total
@@ -216,7 +221,6 @@ if cliente_sel_label:
     st.markdown("---")
     st.subheader(f"Ficha de: {nom_cliente}")
 
-    # Tarjetas principales
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("📍 Lote / Etapa", f"{etapa} - {lote}", f"{m2} m²")
     c2.metric("💳 Modalidad", modalidad)
