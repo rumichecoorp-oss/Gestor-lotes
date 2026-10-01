@@ -1,21 +1,22 @@
 import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
+import openpyxl
 import io
 import requests
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="Gestor de Pagos y Lotes", page_icon="🏢", layout="wide")
 
 SHEET_ID = "1CdRBWSW9QDh63s7-8lnZvGu8rwz65z2duPnk2Nqfzqc"
 
 @st.cache_data(ttl=15)
-def cargar_datos(sheet_name):
-    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+def descargar_workbook():
+    # Descarga el archivo XLSX conservando los estilos de color y formatos de celda
+    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx"
     res = requests.get(url)
     if res.status_code != 200:
         return None
-    df = pd.read_csv(io.StringIO(res.content.decode('utf-8')), header=None)
-    return df
+    wb = openpyxl.load_workbook(io.BytesIO(res.content), data_only=True)
+    return wb
 
 st.title("🏢 Gestor de Pagos y Lotes Inmobiliarios")
 
@@ -25,105 +26,197 @@ with col_btn:
         st.cache_data.clear()
         st.rerun()
 
-df_ct = cargar_datos("CT")
-df_ventas = cargar_datos("VENTAS")
-
-if df_ct is None or df_ventas is None:
-    st.error("No se pudo conectar con las pestañas 'CT' o 'VENTAS'.")
+wb = descargar_workbook()
+if not wb or "CT" not in wb.sheetnames:
+    st.error("No se pudo conectar con la hoja de cálculo o no existe la pestaña 'CT'.")
     st.stop()
 
-# Lista de palabras clave, meses y encabezados que NO son clientes
+ws_ct = wb["CT"]
+ws_ventas = wb["VENTAS"] if "VENTAS" in wb.sheetnames else None
+
+def get_color_estado(cell):
+    """
+    Detecta el estado de la cuota según color de celda (RGB/ARGB)
+    o por contenido de la anotación registrada.
+    """
+    color_detectado = None
+
+    if cell and cell.fill and cell.fill.start_color:
+        color = cell.fill.start_color
+        rgb = getattr(color, 'rgb', None)
+        if rgb and isinstance(rgb, str):
+            rgb = str(rgb).upper().strip()
+            # Si tiene 8 caracteres (ARGB con canal alfa de Google), tomamos los últimos 6
+            if len(rgb) == 8:
+                rgb = rgb[2:]
+
+            # Tonos verdes comunes en Google Sheets
+            if any(g in rgb for g in ["00FF00", "57BB8A", "6AA84F", "00E676", "38761D", "85E89D", "B7E1CD", "274E13", "81C784", "4CAF50", "A8DAB5"]):
+                color_detectado = "VERDE"
+            # Tonos naranja / ámbar (cuotas por vencer / vencidas)
+            elif any(o in rgb for o in ["FFA500", "FF9900", "F6B26B", "F9AB00", "E69138", "FB8C00", "FF5722", "FFB74D", "FF9800", "FCE8E6"]):
+                color_detectado = "NARANJA"
+            # Tonos rojos (lotes caídos / mora crítica)
+            elif any(r in rgb for r in ["FF0000", "CC0000", "E06666", "EA4335", "990000", "E57373", "F44336"]):
+                color_detectado = "ROJO"
+
+    if color_detectado in ["VERDE", "NARANJA", "ROJO"]:
+        return color_detectado
+
+    # Respaldo de seguridad por contenido si el tema de Sheets no expuso el RGB
+    val_str = str(cell.value or "").strip().upper() if cell else ""
+    if val_str and val_str not in ["NONE", "NAN", ""]:
+        if any(w in val_str for w in ["DEBE", "MORA", "FALTA"]):
+            return "NARANJA"
+        if any(w in val_str for w in ["BAJA", "PERDIDO", "CANCELADO"]):
+            return "ROJO"
+        # Si tiene texto de pago o monto (ej: '636 //30-5' o 'S/.795')
+        return "VERDE"
+
+    return "BLANCO"
+
+def clean_number(val):
+    if val is None:
+        return 0.0
+    s = str(val).replace("S/.", "").replace("S/", "").replace(",", "").replace(" ", "").strip()
+    try:
+        return float(s)
+    except:
+        return 0.0
+
+def normalizar(txt):
+    if not txt:
+        return ""
+    return str(txt).replace(" ", "").replace("-", "").replace("_", "").upper().strip()
+
 PALABRAS_IGNORAR = {
     "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
     "JULIO", "AGOSTO", "SETIEMBRE", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE",
     "NOMBRE", "NOMBRES", "NOMBRRE", "CLIENTE", "ID", "TOTAL", "SUBTOTAL"
 }
 
-def es_cliente_valido(val, fila):
-    if pd.isna(val):
-        return False
-    texto = str(val).strip().upper()
-    if not texto or texto in PALABRAS_IGNORAR:
-        return False
-    # Una fila de cliente real tiene Lote o Etapa asignada en columna B o C
-    etapa = str(fila.iloc[1]).strip() if len(fila) > 1 and pd.notna(fila.iloc[1]) else ""
-    lote = str(fila.iloc[2]).strip() if len(fila) > 2 and pd.notna(fila.iloc[2]) else ""
-    return bool(etapa or lote)
+# 1. Encontrar la columna donde empieza la cuota 1 en la fila de encabezados
+fila_encabezado_idx = 1
+col_cuota_1 = 13  # Por defecto columna M
 
-# Filtrar únicamente clientes reales
-filas_validas = []
-for idx, fila in df_ct.iterrows():
-    if es_cliente_valido(fila.iloc[0], fila):
-        filas_validas.append(fila)
+for r in range(1, 10):
+    for c in range(8, 20):
+        val = str(ws_ct.cell(row=r, column=c).value).strip()
+        if val == "1":
+            fila_encabezado_idx = r
+            col_cuota_1 = c
+            break
+    if col_cuota_1 != 13:
+        break
 
-if not filas_validas:
-    st.warning("No se encontraron registros de clientes en la pestaña CT.")
+# 2. Extraer lotes y clientes permitiendo duplicados mediante identificación única
+registros_lotes = []
+for r in range(fila_encabezado_idx + 1, ws_ct.max_row + 1):
+    val_nom = ws_ct.cell(row=r, column=1).value
+    if val_nom is None:
+        continue
+    nom_str = str(val_nom).strip()
+    if not nom_str or nom_str.upper() in PALABRAS_IGNORAR:
+        continue
+        
+    etapa = str(ws_ct.cell(row=r, column=2).value or "").strip()
+    lote = str(ws_ct.cell(row=r, column=3).value or "").strip()
+    if not etapa and not lote:
+        continue
+
+    # Etiqueta visible única para no pisar clientes repetidos
+    label = f"{nom_str} — {etapa} Lote {lote}"
+    registros_lotes.append({
+        "id_compuesto": label,
+        "nombre": nom_str,
+        "etapa": etapa,
+        "lote": lote,
+        "row_idx": r
+    })
+
+if not registros_lotes:
+    st.warning("No se encontraron registros válidos de clientes en la pestaña CT.")
     st.stop()
 
-df_clientes = pd.DataFrame(filas_validas)
-nombres_clientes = sorted(df_clientes.iloc[:, 0].astype(str).str.strip().unique().tolist())
+opciones_busqueda = [item["id_compuesto"] for item in registros_lotes]
 
-cliente_sel = st.selectbox(
-    "🔍 Buscar cliente (Columna A):",
-    options=nombres_clientes,
+cliente_sel_label = st.selectbox(
+    "🔍 Buscar por Cliente o Lote (Columna A):",
+    options=opciones_busqueda,
     index=None,
-    placeholder="Escribe o selecciona un cliente..."
+    placeholder="Escribe el nombre del cliente o el lote..."
 )
 
-if cliente_sel:
-    fila_ct = df_clientes[df_clientes.iloc[:, 0].astype(str).str.strip() == cliente_sel].iloc[0]
+if cliente_sel_label:
+    data_sel = next(item for item in registros_lotes if item["id_compuesto"] == cliente_sel_label)
+    row_idx = data_sel["row_idx"]
+    nom_cliente = data_sel["nombre"]
+    etapa = data_sel["etapa"]
+    lote = data_sel["lote"]
 
-    # Cruzar datos con pestaña VENTAS
-    fila_v = None
-    matches_v = df_ventas[df_ventas.iloc[:, 1].astype(str).str.strip().str.upper() == cliente_sel.upper()]
-    if not matches_v.empty:
-        fila_v = matches_v.iloc[0]
+    m2 = str(ws_ct.cell(row=row_idx, column=4).value or "-").strip()
+    valor_cuota = clean_number(ws_ct.cell(row=row_idx, column=9).value) # Columna I en CT
 
-    def to_float(val):
-        if pd.isna(val): return 0.0
-        s = str(val).replace("S/.", "").replace("S/", "").replace(",", "").replace(" ", "").strip()
-        try: return float(s)
-        except: return 0.0
+    # Valores base tomados de CT como respaldo
+    valor_total = clean_number(ws_ct.cell(row=row_idx, column=5).value) # Columna E en CT
+    monto_inicial = clean_number(ws_ct.cell(row=row_idx, column=6).value) # Columna F en CT
+    modalidad = "FINANCIADO"
 
-    etapa = str(fila_ct.iloc[1]).strip() if len(fila_ct) > 1 and pd.notna(fila_ct.iloc[1]) else "-"
-    lote = str(fila_ct.iloc[2]).strip() if len(fila_ct) > 2 and pd.notna(fila_ct.iloc[2]) else "-"
-    m2 = str(fila_ct.iloc[3]).strip() if len(fila_ct) > 3 and pd.notna(fila_ct.iloc[3]) else "-"
+    # Cruce con la pestaña VENTAS haciendo coincidir CLIENTE Y LOTE
+    if ws_ventas:
+        for r_v in range(2, ws_ventas.max_row + 1):
+            nom_v = str(ws_ventas.cell(row=r_v, column=2).value or "").strip()
+            lote_v = str(ws_ventas.cell(row=r_v, column=5).value or "").strip()
+            
+            coincide_nom = normalizar(nom_v) == normalizar(nom_cliente)
+            coincide_lote = normalizar(lote_v) == normalizar(lote) if lote and lote_v else True
+            
+            if coincide_nom and coincide_lote:
+                v_total = clean_number(ws_ventas.cell(row=r_v, column=7).value)   # Columna G en VENTAS
+                v_inic = clean_number(ws_ventas.cell(row=r_v, column=12).value)   # Columna L en VENTAS
+                mod_v = str(ws_ventas.cell(row=r_v, column=15).value or "").strip().upper() # Columna O en VENTAS
+                
+                if v_total > 0: valor_total = v_total
+                if v_inic > 0: monto_inicial = v_inic
+                if mod_v: modalidad = mod_v
+                break
 
-    # Precios desde VENTAS (Cols G, L, O) o de respaldo en CT
-    valor_total = to_float(fila_v.iloc[6]) if fila_v is not None and len(fila_v) > 6 else to_float(fila_ct.iloc[4])
-    monto_inicial = to_float(fila_v.iloc[11]) if fila_v is not None and len(fila_v) > 11 else to_float(fila_ct.iloc[5])
-    modalidad = str(fila_v.iloc[14]).strip().upper() if fila_v is not None and len(fila_v) > 14 and pd.notna(fila_v.iloc[14]) else "FINANCIADO"
-    valor_cuota = to_float(fila_ct.iloc[8])
-
-    # Contar cuotas pagadas (casillas con valor o notas desde Col M / índice 12 a la 47)
-    cuotas_vals = fila_ct.iloc[12:48].tolist() if len(fila_ct) > 12 else []
-    cuotas_totales = 36
+    # 3. Procesar las 36 cuotas evaluando verde, naranja, rojo o blanco
     cuotas_estados = []
+    total_verdes = 0
+    total_naranjas = 0
+    total_rojas = 0
 
-    for c in cuotas_vals:
-        s_val = str(c).strip()
-        if pd.notna(c) and s_val != "" and s_val != "nan" and s_val != "None":
-            cuotas_estados.append(True)
+    for i in range(36):
+        c_idx = col_cuota_1 + i
+        cell = ws_ct.cell(row=row_idx, column=c_idx)
+        est = get_color_estado(cell)
+        
+        if est == "VERDE":
+            total_verdes += 1
+            cuotas_estados.append("VERDE")
+        elif est == "NARANJA":
+            total_naranjas += 1
+            cuotas_estados.append("NARANJA")
+        elif est == "ROJO":
+            total_rojas += 1
+            cuotas_estados.append("ROJO")
         else:
-            cuotas_estados.append(False)
+            cuotas_estados.append("BLANCO")
 
-    # Rellenar hasta 36 si la hoja tiene menos columnas
-    while len(cuotas_estados) < cuotas_totales:
-        cuotas_estados.append(False)
-
-    cuotas_pagadas = sum(cuotas_estados)
-
+    # Reglas financieras según la modalidad de pago
     es_contado = "CONTADO" in modalidad
     if es_contado:
         total_pagado = valor_total
         saldo_pendiente = 0.0
     else:
-        total_pagado = monto_inicial + (cuotas_pagadas * valor_cuota)
+        total_pagado = monto_inicial + (total_verdes * valor_cuota)
         saldo_pendiente = max(0.0, valor_total - total_pagado)
 
     st.markdown("---")
-    st.subheader(f"Ficha de: {cliente_sel}")
+    st.subheader(f"Ficha de: {nom_cliente}")
 
+    # Tarjetas principales
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("📍 Lote / Etapa", f"{etapa} - {lote}", f"{m2} m²")
     c2.metric("💳 Modalidad", modalidad)
@@ -133,7 +226,7 @@ if cliente_sel:
     c5, c6, c7 = st.columns(3)
     c5.metric("💵 Total Pagado", f"S/. {total_pagado:,.2f}")
     c6.metric("⏳ Saldo Pendiente", f"S/. {saldo_pendiente:,.2f}")
-    c7.metric("📊 Cuotas Pagadas", f"{cuotas_pagadas} de {cuotas_totales}")
+    c7.metric("📊 Cuotas Pagadas", f"{total_verdes} de 36", f"{total_naranjas} vencidas" if total_naranjas > 0 else None)
 
     col_chart, col_matrix = st.columns([1, 1])
 
@@ -143,17 +236,23 @@ if cliente_sel:
             labels=['Total Pagado', 'Saldo Pendiente'],
             values=[total_pagado, saldo_pendiente],
             hole=.5,
-            marker_colors=['#00E676', '#FFA500'] if not es_contado else ['#00E676', '#E0E0E0']
+            marker_colors=['#00E676', '#FFA500'] if not es_contado else ['#00E676', '#CCCCCC']
         )])
         fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
         st.plotly_chart(fig, use_container_width=True)
 
     with col_matrix:
         st.subheader("Matriz de las 36 Cuotas")
+        st.caption("🟢 Verde: Pagada | 🟠 Naranja: Vencida | 🔴 Rojo: Pérdida | ⚪ Neutro: Pendiente")
         cuotas_cols = st.columns(6)
-        for i in range(1, cuotas_totales + 1):
+        for i in range(1, 37):
             with cuotas_cols[(i - 1) % 6]:
-                if es_contado or cuotas_estados[i - 1]:
+                est = cuotas_estados[i - 1]
+                if es_contado or est == "VERDE":
                     st.success(f"C{i}")
+                elif est == "NARANJA":
+                    st.warning(f"C{i}")
+                elif est == "ROJO":
+                    st.error(f"C{i}")
                 else:
                     st.info(f"C{i}")
