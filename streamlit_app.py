@@ -3,8 +3,119 @@ import openpyxl
 import io
 import requests
 import plotly.graph_objects as go
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Gestor de Pagos y Lotes", page_icon="🏢", layout="wide")
+st.set_page_config(
+    page_title="GESTOR PAGOS VALLE HERMOSO",
+    page_icon="🏡",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# Estilos CSS personalizados para móvil y reducción de elementos
+st.markdown("""
+<style>
+    /* Estructura general compacta */
+    .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 5rem !important;
+        padding-left: 0.8rem !important;
+        padding-right: 0.8rem !important;
+        max-width: 580px !important;
+    }
+    
+    /* Encabezado principal */
+    .app-header {
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .app-title {
+        font-size: 1.35rem;
+        font-weight: 800;
+        color: #1A365D;
+        letter-spacing: -0.5px;
+        margin: 0;
+    }
+    
+    /* Tarjeta contenedor del cliente (área capturable) */
+    #reporte-cliente-card {
+        background: #ffffff;
+        border: 1px solid #E2E8F0;
+        border-radius: 14px;
+        padding: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+        margin-top: 10px;
+    }
+
+    /* Grid móvil para las métricas */
+    .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+    .metric-card {
+        background: #F8FAFC;
+        border: 1px solid #EDF2F7;
+        border-radius: 10px;
+        padding: 8px 10px;
+    }
+    .metric-label {
+        font-size: 0.72rem;
+        color: #718096;
+        text-transform: uppercase;
+        font-weight: 600;
+        margin-bottom: 2px;
+    }
+    .metric-val {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #2D3748;
+    }
+    .metric-val.green { color: #2E7D32; }
+    .metric-val.orange { color: #DD6B20; }
+
+    /* Cuadrícula compacta de las 36 cuotas */
+    .cuotas-container {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 5px;
+        margin-top: 8px;
+    }
+    .cuota-badge {
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-align: center;
+        padding: 5px 0;
+        border-radius: 6px;
+        color: #ffffff;
+    }
+    .badge-verde { background-color: #00C853; }
+    .badge-naranja { background-color: #FF9100; }
+    .badge-rojo { background-color: #E53935; }
+    .badge-blanco { background-color: #E2E8F0; color: #4A5568 !important; }
+
+    /* Botón flotante inferior derecho para compartir */
+    .floating-share-btn {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 999999;
+        background: #1A365D;
+        color: #ffffff;
+        border: none;
+        border-radius: 50px;
+        padding: 12px 18px;
+        font-size: 0.9rem;
+        font-weight: 700;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 SHEET_ID = "1CdRBWSW9QDh63s7-8lnZvGu8rwz65z2duPnk2Nqfzqc"
 
@@ -17,13 +128,12 @@ def descargar_workbook():
     wb = openpyxl.load_workbook(io.BytesIO(res.content), data_only=True)
     return wb
 
-st.title("🏢 Gestor de Pagos y Lotes Inmobiliarios")
+# Encabezado
+st.markdown('<div class="app-header"><h1 class="app-title">🏡 GESTOR PAGOS VALLE HERMOSO</h1></div>', unsafe_allow_html=True)
 
-col_btn, _ = st.columns([2, 8])
-with col_btn:
-    if st.button("🔄 Refrescar Datos"):
-        st.cache_data.clear()
-        st.rerun()
+if st.button("🔄 Refrescar Datos", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
 
 wb = descargar_workbook()
 if not wb or "CT" not in wb.sheetnames:
@@ -34,35 +144,25 @@ ws_ct = wb["CT"]
 ws_ventas = wb["VENTAS"] if "VENTAS" in wb.sheetnames else None
 
 def get_color_estado(cell):
-    """
-    Inspección exhaustiva de Color RGB, Theme, Indexed y Regla de Negocio
-    para garantizar que ninguna cuota vencida se pase a blanco.
-    """
     if not cell:
         return "BLANCO"
 
     val_str = str(cell.value or "").strip().upper()
     tiene_contenido = bool(val_str and val_str not in ["NONE", "NAN", ""])
 
-    # 1. Inspeccionar estilos de relleno (Fill)
     rgb_str = ""
-    theme_val = None
     indexed_val = None
 
     if cell.fill and (cell.fill.fill_type or cell.fill.start_color or cell.fill.fgColor):
         color_obj = getattr(cell.fill, 'fgColor', None) or getattr(cell.fill, 'start_color', None)
         if color_obj:
-            # Obtener RGB
             v_rgb = getattr(color_obj, 'rgb', None) or getattr(color_obj, 'value', None)
             if v_rgb and isinstance(v_rgb, str):
                 rgb_str = v_rgb.upper().strip()
                 if len(rgb_str) == 8:
-                    rgb_str = rgb_str[2:] # Quitar canal alfa
-            
-            theme_val = getattr(color_obj, 'theme', None)
+                    rgb_str = rgb_str[2:]
             indexed_val = getattr(color_obj, 'indexed', None) or getattr(color_obj, 'index', None)
 
-    # 2. Detección directa por código RGB
     verdes_rgb = [
         "00FF00", "57BB8A", "6AA84F", "00E676", "38761D", "85E89D", 
         "B7E1CD", "274E13", "81C784", "4CAF50", "2E7D32", "00C853", 
@@ -83,24 +183,12 @@ def get_color_estado(cell):
     if any(r in rgb_str for r in rojos_rgb) or indexed_val in [10, 16]:
         return "ROJO"
 
-    # 3. Detección por Theme (Google Sheets usa theme para colores de paleta)
-    if theme_val is not None:
-        # En temas de Excel exportados por Google:
-        # Theme 4 / 6 / 8 suelen ser acentos naranja / marrón
-        # Si tiene theme de acento y tiene contenido -> es naranja
-        if tiene_contenido:
-            return "NARANJA"
-
-    # 4. REGLA MAESTRA INMOBILIARIA:
-    # Si la celda contiene un monto (ej: '615', '388') o texto pero NO fue detectada como VERDE:
-    # Significa que la cuota está exigible / vencida.
+    # Regla por contenido si no es verde
     if tiene_contenido:
         if any(w in val_str for w in ["BAJA", "PERDIDO", "CANCELADO"]):
             return "ROJO"
-        # Si no es verde y tiene monto registrado -> NARANJA (Vencida)
         return "NARANJA"
 
-    # Si está completamente vacía
     return "BLANCO"
 
 def clean_number(val):
@@ -123,9 +211,8 @@ PALABRAS_IGNORAR = {
     "NOMBRE", "NOMBRES", "NOMBRRE", "CLIENTE", "ID", "TOTAL", "SUBTOTAL"
 }
 
-# Encontrar columna inicial de Cuota 1
 fila_encabezado_idx = 1
-col_cuota_1 = 13  # Columna M
+col_cuota_1 = 13
 
 for r in range(1, 10):
     for c in range(8, 20):
@@ -161,16 +248,16 @@ for r in range(fila_encabezado_idx + 1, ws_ct.max_row + 1):
     })
 
 if not registros_lotes:
-    st.warning("No se encontraron registros de clientes en la pestaña CT.")
+    st.warning("No se encontraron clientes.")
     st.stop()
 
 opciones_busqueda = [item["id_compuesto"] for item in registros_lotes]
 
 cliente_sel_label = st.selectbox(
-    "🔍 Buscar por Cliente o Lote (Columna A):",
+    "🔍 Seleccionar o buscar cliente:",
     options=opciones_busqueda,
     index=None,
-    placeholder="Escribe el nombre del cliente o el lote..."
+    placeholder="Escribe el nombre o lote..."
 )
 
 if cliente_sel_label:
@@ -181,13 +268,12 @@ if cliente_sel_label:
     lote = data_sel["lote"]
 
     m2 = str(ws_ct.cell(row=row_idx, column=4).value or "-").strip()
-    valor_cuota = clean_number(ws_ct.cell(row=row_idx, column=9).value) # Columna I en CT
+    valor_cuota = clean_number(ws_ct.cell(row=row_idx, column=9).value)
 
-    valor_total = clean_number(ws_ct.cell(row=row_idx, column=5).value) # Columna E en CT
-    monto_inicial = clean_number(ws_ct.cell(row=row_idx, column=6).value) # Columna F en CT
+    valor_total = clean_number(ws_ct.cell(row=row_idx, column=5).value)
+    monto_inicial = clean_number(ws_ct.cell(row=row_idx, column=6).value)
     modalidad = "FINANCIADO"
 
-    # Cruce preciso con VENTAS
     if ws_ventas:
         for r_v in range(2, ws_ventas.max_row + 1):
             nom_v = str(ws_ventas.cell(row=r_v, column=2).value or "").strip()
@@ -197,16 +283,15 @@ if cliente_sel_label:
             coincide_lote = normalizar(lote_v) == normalizar(lote) if lote and lote_v else True
             
             if coincide_nom and coincide_lote:
-                v_total = clean_number(ws_ventas.cell(row=r_v, column=7).value)   # Col G
-                v_inic = clean_number(ws_ventas.cell(row=r_v, column=12).value)   # Col L
-                mod_v = str(ws_ventas.cell(row=r_v, column=15).value or "").strip().upper() # Col O
+                v_total = clean_number(ws_ventas.cell(row=r_v, column=7).value)
+                v_inic = clean_number(ws_ventas.cell(row=r_v, column=12).value)
+                mod_v = str(ws_ventas.cell(row=r_v, column=15).value or "").strip().upper()
                 
                 if v_total > 0: valor_total = v_total
                 if v_inic > 0: monto_inicial = v_inic
                 if mod_v: modalidad = mod_v
                 break
 
-    # Procesar cuotas
     cuotas_estados = []
     total_verdes = 0
     total_naranjas = 0
@@ -237,45 +322,138 @@ if cliente_sel_label:
         total_pagado = monto_inicial + (total_verdes * valor_cuota)
         saldo_pendiente = max(0.0, valor_total - total_pagado)
 
-    st.markdown("---")
-    st.subheader(f"Ficha de: {nom_cliente}")
+    # Generación de la cuadrícula de cuotas compactas
+    badges_html = ""
+    for i in range(1, 37):
+        est = cuotas_estados[i - 1]
+        clase = "badge-verde" if (es_contado or est == "VERDE") else ("badge-naranja" if est == "NARANJA" else ("badge-rojo" if est == "ROJO" else "badge-blanco"))
+        badges_html += f'<div class="cuota-badge {clase}">C{i}</div>'
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("📍 Lote / Etapa", f"{etapa} - {lote}", f"{m2} m²")
-    c2.metric("💳 Modalidad", modalidad)
-    c3.metric("💰 Inicial", f"S/. {monto_inicial:,.2f}")
-    c4.metric("📅 Valor Cuota", f"S/. {valor_cuota:,.2f}")
+    # Render de la tarjeta de reporte capturable
+    st.markdown(f"""
+    <div id="reporte-cliente-card">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; border-bottom:1px solid #EDF2F7; padding-bottom:8px;">
+            <div>
+                <h3 style="margin:0; font-size:1.2rem; color:#1A365D;">{nom_cliente}</h3>
+                <span style="font-size:0.82rem; color:#718096; font-weight:600;">{etapa} — Lote {lote} ({m2} m²)</span>
+            </div>
+            <div style="text-align:right;">
+                <span style="background:#EBF8FF; color:#2B6CB0; padding:3px 8px; border-radius:6px; font-size:0.75rem; font-weight:700;">{modalidad}</span>
+            </div>
+        </div>
 
-    c5, c6, c7 = st.columns(3)
-    c5.metric("💵 Total Pagado", f"S/. {total_pagado:,.2f}")
-    c6.metric("⏳ Saldo Pendiente", f"S/. {saldo_pendiente:,.2f}")
-    c7.metric("📊 Cuotas Pagadas", f"{total_verdes} de 36", f"{total_naranjas} vencidas" if total_naranjas > 0 else None)
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Valor Total</div>
+                <div class="metric-val">S/. {valor_total:,.2f}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Monto Inicial</div>
+                <div class="metric-val">S/. {monto_inicial:,.2f}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Total Pagado</div>
+                <div class="metric-val green">S/. {total_pagado:,.2f}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Saldo Pendiente</div>
+                <div class="metric-val orange">S/. {saldo_pendiente:,.2f}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Valor de Cuota</div>
+                <div class="metric-val">S/. {valor_cuota:,.2f}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Cuotas Pagadas</div>
+                <div class="metric-val">{total_verdes} de 36 {"(" + str(total_naranjas) + " venc)" if total_naranjas > 0 else ""}</div>
+            </div>
+        </div>
 
-    col_chart, col_matrix = st.columns([1, 1])
+        <div style="margin-top:12px;">
+            <div style="font-size:0.78rem; font-weight:700; color:#4A5568; margin-bottom:4px; display:flex; justify-content:space-between;">
+                <span>Matriz de 36 Cuotas</span>
+                <span style="font-size:0.7rem; color:#718096;">🟢 Pagada | 🟠 Vencida | ⚪ Pend</span>
+            </div>
+            <div class="cuotas-container">
+                {badges_html}
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    with col_chart:
-        st.subheader("Estado de Amortización")
-        fig = go.Figure(data=[go.Pie(
-            labels=['Total Pagado', 'Saldo Pendiente'],
-            values=[total_pagado, saldo_pendiente],
-            hole=.5,
-            marker_colors=['#00E676', '#FFA500'] if not es_contado else ['#00E676', '#CCCCCC']
-        )])
-        fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
-        st.plotly_chart(fig, use_container_width=True)
+    # Gráfico de dona compacto debajo de la tarjeta
+    st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+    fig = go.Figure(data=[go.Pie(
+        labels=['Total Pagado', 'Saldo Pendiente'],
+        values=[total_pagado, saldo_pendiente],
+        hole=.55,
+        marker_colors=['#00E676', '#FF9100'] if not es_contado else ['#00E676', '#CCCCCC'],
+        textinfo='percent',
+        hoverinfo='label+value'
+    )])
+    fig.update_layout(
+        height=210,
+        margin=dict(t=5, b=5, l=5, r=5),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5, font=dict(size=11))
+    )
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-    with col_matrix:
-        st.subheader("Matriz de las 36 Cuotas")
-        st.caption("🟢 Verde: Pagada | 🟠 Naranja: Vencida | 🔴 Rojo: Pérdida | ⚪ Neutro: Pendiente")
-        cuotas_cols = st.columns(6)
-        for i in range(1, 37):
-            with cuotas_cols[(i - 1) % 6]:
-                est = cuotas_estados[i - 1]
-                if es_contado or est == "VERDE":
-                    st.success(f"C{i}")
-                elif est == "NARANJA":
-                    st.warning(f"C{i}")
-                elif est == "ROJO":
-                    st.error(f"C{i}")
-                else:
-                    st.info(f"C{i}")
+    # Botón Flotante Inferior Derecho con html2canvas y Web Share API
+    components.html(f"""
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <button id="btnShareReporte" class="floating-share-btn" onclick="capturarYCompartir()">
+        📸 Compartir Ficha
+    </button>
+
+    <script>
+    async function capturarYCompartir() {{
+        const card = window.parent.document.getElementById('reporte-cliente-card');
+        if (!card) {{
+            alert("No se encontró la ficha del cliente.");
+            return;
+        }}
+
+        const btn = document.getElementById('btnShareReporte');
+        btn.innerText = "⏳ Generando...";
+        btn.disabled = true;
+
+        try {{
+            const canvas = await html2canvas(card, {{
+                scale: 2,
+                useCORS: true,
+                backgroundColor: "#ffffff"
+            }});
+
+            canvas.toBlob(async (blob) => {{
+                const file = new File([blob], "Estado_Cuenta_{nom_cliente.replace(' ', '_')}.png", {{ type: "image/png" }});
+
+                // Si el navegador soporta compartir archivos nativamente (móviles / WhatsApp)
+                if (navigator.canShare && navigator.canShare({{ files: [file] }})) {{
+                    try {{
+                        await navigator.share({{
+                            title: 'Estado de Cuenta - Valle Hermoso',
+                            text: 'Reporte de lote para {nom_cliente} ({etapa} Lote {lote})',
+                            files: [file]
+                        }});
+                    }} catch (e) {{
+                        console.log("Compartir cancelado o no soportado:", e);
+                    }}
+                }} else {{
+                    // Descarga directa si es computadora
+                    const link = document.createElement('a');
+                    link.download = "Estado_Cuenta_{nom_cliente.replace(' ', '_')}.png";
+                    link.href = canvas.toDataURL('image/png');
+                    link.click();
+                }}
+                btn.innerText = "📸 Compartir Ficha";
+                btn.disabled = false;
+            }}, 'image/png');
+        }} catch (err) {{
+            alert("Error al capturar la imagen: " + err);
+            btn.innerText = "📸 Compartir Ficha";
+            btn.disabled = false;
+        }}
+    }}
+    </script>
+    """, height=70)
