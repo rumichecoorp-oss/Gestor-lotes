@@ -1,9 +1,11 @@
 import streamlit as st
 import openpyxl
 import io
+import base64
 import requests
 import plotly.graph_objects as go
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
+import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="GESTOR PAGOS VALLE HERMOSO",
@@ -12,54 +14,54 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilos CSS compactos para móvil
+# Estilos CSS ultra compactos para móvil
 st.markdown("""
 <style>
     .block-container {
-        padding-top: 1rem !important;
+        padding-top: 0.8rem !important;
         padding-bottom: 4rem !important;
-        padding-left: 0.6rem !important;
-        padding-right: 0.6rem !important;
-        max-width: 520px !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        max-width: 480px !important;
     }
     .app-title {
-        font-size: 1.25rem;
+        font-size: 1.15rem;
         font-weight: 800;
         color: #1A365D;
         text-align: center;
-        margin-bottom: 0.8rem;
+        margin-bottom: 0.6rem;
     }
-    /* Reducción de métricas nativas */
+    /* Métricas compactas */
     [data-testid="stMetric"] {
         background-color: #F8FAFC;
         border: 1px solid #E2E8F0;
-        border-radius: 8px;
-        padding: 6px 10px;
+        border-radius: 6px;
+        padding: 4px 8px;
     }
     [data-testid="stMetricLabel"] {
-        font-size: 0.72rem !important;
+        font-size: 0.65rem !important;
         color: #64748B !important;
         font-weight: 600;
     }
     [data-testid="stMetricValue"] {
-        font-size: 1.05rem !important;
+        font-size: 0.95rem !important;
         font-weight: 700 !important;
         color: #1E293B !important;
     }
-    /* Contenedor compacto de las 36 cuotas */
-    .cuotas-grid {
+    /* Cuadrícula ultra reducida para las 36 cuotas */
+    .cuotas-grid-mini {
         display: grid;
-        grid-template-columns: repeat(6, 1fr);
-        gap: 4px;
-        margin-top: 6px;
-        margin-bottom: 12px;
+        grid-template-columns: repeat(9, 1fr);
+        gap: 3px;
+        margin-top: 4px;
+        margin-bottom: 8px;
     }
-    .badge-c {
-        font-size: 0.72rem;
+    .badge-mini {
+        font-size: 0.65rem;
         font-weight: 700;
         text-align: center;
-        padding: 5px 0;
-        border-radius: 5px;
+        padding: 3px 0;
+        border-radius: 3px;
         color: #ffffff;
     }
     .c-verde { background-color: #00C853; }
@@ -211,23 +213,22 @@ cliente_sel_label = st.selectbox(
 )
 
 def generar_imagen_reporte(nombre, etapa, lote, m2, modalidad, valor_total, inicial, total_pagado, saldo, valor_cuota, pagadas, vencidas, cuotas_estados, es_contado):
-    """Crea una tarjeta de imagen PNG en alta definición lista para compartir por WhatsApp."""
-    w, h = 600, 780
+    w, h = 600, 940
     img = Image.new("RGB", (w, h), "#FFFFFF")
     draw = ImageDraw.Draw(img)
 
-    # Encabezado azul oscuro
-    draw.rectangle([(0, 0), (w, 95)], fill="#1A365D")
+    # Membrete
+    draw.rectangle([(0, 0), (w, 90)], fill="#1A365D")
     draw.text((25, 20), "VALLE HERMOSO INMOBILIARIA", fill="#FFFFFF")
     draw.text((25, 48), "ESTADO DE CUENTA DE LOTE", fill="#90CDF4")
 
-    # Datos del cliente
-    draw.text((25, 110), f"CLIENTE: {nombre.upper()}", fill="#1E293B")
-    draw.text((25, 135), f"UBICACIÓN: {etapa} — Lote {lote} ({m2} m²)", fill="#64748B")
-    draw.text((420, 110), f"MODALIDAD: {modalidad}", fill="#2B6CB0")
-    draw.line([(25, 165), (w - 25, 165)], fill="#E2E8F0", width=2)
+    # Datos Cliente
+    draw.text((25, 105), f"CLIENTE: {nombre.upper()}", fill="#1E293B")
+    draw.text((25, 128), f"UBICACIÓN: {etapa} — Lote {lote} ({m2} m²)", fill="#64748B")
+    draw.text((430, 105), f"MODO: {modalidad}", fill="#2B6CB0")
+    draw.line([(25, 155), (w - 25, 155)], fill="#E2E8F0", width=2)
 
-    # Cuadrícula de valores
+    # Cajas métricas
     datos_box = [
         ("VALOR TOTAL", f"S/. {valor_total:,.2f}"),
         ("INICIAL", f"S/. {inicial:,.2f}"),
@@ -239,22 +240,46 @@ def generar_imagen_reporte(nombre, etapa, lote, m2, modalidad, valor_total, inic
 
     for idx, (label, valor) in enumerate(datos_box):
         x = 25 if idx % 2 == 0 else 310
-        y = 185 + (idx // 2) * 65
-        draw.rectangle([(x, y), (x + 265, y + 55)], fill="#F8FAFC", outline="#E2E8F0", width=1)
-        draw.text((x + 12, y + 8), label, fill="#64748B")
+        y = 170 + (idx // 2) * 58
+        draw.rectangle([(x, y), (x + 265, y + 50)], fill="#F8FAFC", outline="#E2E8F0", width=1)
+        draw.text((x + 12, y + 6), label, fill="#64748B")
         color_val = "#2E7D32" if "PAGADO" in label else ("#DD6B20" if "SALDO" in label else "#1E293B")
-        draw.text((x + 12, y + 26), valor, fill=color_val)
+        draw.text((x + 12, y + 24), valor, fill=color_val)
 
-    # Matriz visual de 36 cuotas
-    draw.text((25, 395), "MATRIZ DE 36 CUOTAS (Verde: Pagada | Naranja: Vencida)", fill="#1E293B")
-    draw.line([(25, 420), (w - 25, 420)], fill="#E2E8F0", width=1)
+    # DIBUJAR GRÁFICO PASTEL / DONA EN LA IMAGEN
+    draw.text((25, 360), "AMORTIZACIÓN DE DEUDA", fill="#1E293B")
+    draw.line([(25, 380), (w - 25, 380)], fill="#E2E8F0", width=1)
 
-    c_box_w, c_box_h = 85, 32
-    start_x, start_y = 25, 435
+    total_ref = valor_total if valor_total > 0 else (total_pagado + saldo)
+    if total_ref <= 0:
+        total_ref = 1.0
+    
+    porc_pagado = min(1.0, max(0.0, total_pagado / total_ref))
+    angulo_pagado = 360.0 * porc_pagado
+
+    pie_bbox = [50, 400, 210, 560]
+    draw.pieslice(pie_bbox, start=-90, end=-90 + angulo_pagado, fill="#00C853")
+    draw.pieslice(pie_bbox, start=-90 + angulo_pagado, end=270, fill="#FF9100" if not es_contado else "#CCCCCC")
+    # Agujero de la dona
+    draw.ellipse([85, 435, 175, 525], fill="#FFFFFF")
+
+    # Leyenda del gráfico pastel
+    draw.rectangle([(250, 430), (270, 450)], fill="#00C853")
+    draw.text((280, 432), f"Total Pagado: S/. {total_pagado:,.2f} ({porc_pagado * 100:.1f}%)", fill="#1E293B")
+
+    draw.rectangle([(250, 480), (270, 500)], fill="#FF9100" if not es_contado else "#CCCCCC")
+    draw.text((280, 482), f"Saldo Pendiente: S/. {saldo:,.2f} ({(1 - porc_pagado) * 100:.1f}%)", fill="#1E293B")
+
+    # Matriz visual de 36 cuotas (Ultra compacta en filas de 9)
+    draw.text((25, 595), "MATRIZ DE 36 CUOTAS (🟢 Pagada | 🟠 Vencida | ⚪ Pendiente)", fill="#1E293B")
+    draw.line([(25, 615), (w - 25, 615)], fill="#E2E8F0", width=1)
+
+    c_box_w, c_box_h = 54, 26
+    start_x, start_y = 25, 630
 
     for i in range(1, 37):
-        col = (i - 1) % 6
-        fil = (i - 1) // 6
+        col = (i - 1) % 9
+        fil = (i - 1) // 9
         x = start_x + col * (c_box_w + 8)
         y = start_y + fil * (c_box_h + 8)
 
@@ -262,11 +287,11 @@ def generar_imagen_reporte(nombre, etapa, lote, m2, modalidad, valor_total, inic
         fill_color = "#00C853" if (es_contado or est == "VERDE") else ("#FF9100" if est == "NARANJA" else ("#E53935" if est == "ROJO" else "#E2E8F0"))
         draw.rectangle([(x, y), (x + c_box_w, y + c_box_h)], fill=fill_color)
         txt_color = "#FFFFFF" if fill_color != "#E2E8F0" else "#475569"
-        draw.text((x + 30, y + 8), f"C{i}", fill=txt_color)
+        draw.text((x + 16, y + 6), f"C{i}", fill=txt_color)
 
-    # Pie de reporte
-    draw.line([(25, 715), (w - 25, 715)], fill="#E2E8F0", width=1)
-    draw.text((25, 730), "Reporte oficial generado desde Gestor Pagos Valle Hermoso", fill="#94A3B8")
+    # Pie
+    draw.line([(25, 875), (w - 25, 875)], fill="#E2E8F0", width=1)
+    draw.text((25, 890), "Reporte oficial emitido por Gestor Pagos Valle Hermoso", fill="#94A3B8")
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -334,7 +359,7 @@ if cliente_sel_label:
         total_pagado = monto_inicial + (total_verdes * valor_cuota)
         saldo_pendiente = max(0.0, valor_total - total_pagado)
 
-    # Tarjeta de Datos Nativos (Sin HTML que falle)
+    # Tarjeta de Datos
     with st.container(border=True):
         col_t1, col_t2 = st.columns([3, 1])
         with col_t1:
@@ -343,7 +368,6 @@ if cliente_sel_label:
         with col_t2:
             st.info(modalidad)
 
-        # Grilla de métricas en 2 columnas para celular
         m_c1, m_c2 = st.columns(2)
         m_c1.metric("Valor Total", f"S/. {valor_total:,.2f}")
         m_c2.metric("Monto Inicial", f"S/. {monto_inicial:,.2f}")
@@ -356,13 +380,13 @@ if cliente_sel_label:
         m_c5.metric("Valor Cuota", f"S/. {valor_cuota:,.2f}")
         m_c6.metric("Cuotas Pagadas", f"{total_verdes} de 36", f"{total_naranjas} vencidas" if total_naranjas > 0 else None)
 
-        # Cuadrícula compacta de 36 cuotas (HTML en una sola línea)
+        # Matriz en cuadrícula ultra compacta (9 por fila)
         st.markdown("**Matriz de 36 Cuotas**")
-        st.caption("🟢 Verde: Pagada | 🟠 Naranja: Vencida | ⚪ Neutro: Pendiente")
-        badges = "".join([f'<div class="badge-c {"c-verde" if (es_contado or cuotas_estados[i-1]=="VERDE") else ("c-naranja" if cuotas_estados[i-1]=="NARANJA" else ("c-rojo" if cuotas_estados[i-1]=="ROJO" else "c-blanco"))}">C{i}</div>' for i in range(1, 37)])
-        st.markdown(f'<div class="cuotas-grid">{badges}</div>', unsafe_allow_html=True)
+        st.caption("🟢 Pagada | 🟠 Vencida | ⚪ Pendiente")
+        badges = "".join([f'<div class="badge-mini {"c-verde" if (es_contado or cuotas_estados[i-1]=="VERDE") else ("c-naranja" if cuotas_estados[i-1]=="NARANJA" else ("c-rojo" if cuotas_estados[i-1]=="ROJO" else "c-blanco"))}">C{i}</div>' for i in range(1, 37)])
+        st.markdown(f'<div class="cuotas-grid-mini">{badges}</div>', unsafe_allow_html=True)
 
-    # Gráfico de dona compacto
+    # Gráfico de dona en la app
     fig = go.Figure(data=[go.Pie(
         labels=['Total Pagado', 'Saldo Pendiente'],
         values=[total_pagado, saldo_pendiente],
@@ -371,14 +395,14 @@ if cliente_sel_label:
         textinfo='percent'
     )])
     fig.update_layout(
-        height=200,
+        height=180,
         margin=dict(t=5, b=5, l=5, r=5),
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5, font=dict(size=11))
+        legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5, font=dict(size=10))
     )
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-    # Botón para generar y descargar la imagen del reporte
+    # Generación de la imagen en memoria
     img_bytes = generar_imagen_reporte(
         nombre=nom_cliente,
         etapa=etapa,
@@ -396,10 +420,64 @@ if cliente_sel_label:
         es_contado=es_contado
     )
 
-    st.download_button(
-        label="📸 Descargar / Compartir Ficha (Imagen PNG)",
-        data=img_bytes,
-        file_name=f"Estado_Cuenta_{nom_cliente.replace(' ', '_')}.png",
-        mime="image/png",
-        use_container_width=True
-    )
+    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+    nombre_archivo = f"Estado_{nom_cliente.replace(' ', '_')}.png"
+
+    # Componente interactivo para Compartir Directo (Sin descargar ni abrir)
+    components.html(f"""
+    <div style="text-align:center; margin-top:5px;">
+        <button id="btnShareDirect" style="
+            width: 100%;
+            background-color: #25D366;
+            color: #ffffff;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(37, 211, 102, 0.35);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        ">
+            📲 Compartir Ficha al Cliente
+        </button>
+    </div>
+
+    <script>
+    document.getElementById('btnShareDirect').addEventListener('click', async () => {{
+        const b64Data = "{img_b64}";
+        const byteCharacters = atob(b64Data);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {{
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }}
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], {{type: 'image/png'}});
+        const file = new File([blob], "{nombre_archivo}", {{type: 'image/png'}});
+
+        // Si el navegador soporta compartir nativamente (Celulares Android y iPhone)
+        if (navigator.canShare && navigator.canShare({{ files: [file] }})) {{
+            try {{
+                await navigator.share({{
+                    title: 'Estado de Cuenta - Valle Hermoso',
+                    text: 'Hola {nom_cliente}, te compartimos el estado de cuenta actualizado de tu lote ({etapa} Lote {lote}).',
+                    files: [file]
+                }});
+            }} catch (error) {{
+                if (error.name !== 'AbortError') {{
+                    console.log('Error al compartir:', error);
+                }}
+            }}
+        }} else {{
+            // Solo si está en PC de escritorio sin soporte de compartir móvil
+            const a = document.createElement('a');
+            a.href = 'data:image/png;base64,' + b64Data;
+            a.download = "{nombre_archivo}";
+            a.click();
+        }}
+    }});
+    </script>
+    """, height=65)
